@@ -88,6 +88,12 @@ const DEFAULTS = {
   chimeDelayMs: 2_000,
   chimeFile: '', // 自定义提示音路径；空 = 内置合成的 assets/dingdong.wav
 
+  // 语音引擎（cosyvoice = 本地 cosyvoice-server，音色自然；失败自动回退系统 say）
+  ttsEngine: 'cosyvoice', // local | cosyvoice
+  ttsVoice: 'f_young_soft', // cosyvoice 音色名（GET /plugin-api/voice-info/voices 可列全部）
+  ttsSpeed: 1.0, // cosyvoice 语速倍率
+  ttsUrl: 'http://127.0.0.1:9880',
+
   // 过夜摘要
   overnightDigest: true,
   digestMaxEntries: 100,
@@ -376,8 +382,17 @@ function effectiveChime(config) {
   return config.chimeFile && String(config.chimeFile).trim() ? String(config.chimeFile).trim() : CHIME_FILE;
 }
 
+/** TTS 引擎标志（cosyvoice 时传给 ble-speaker CLI） */
+function ttsFlags(config) {
+  if (config.ttsEngine !== 'cosyvoice') return [];
+  const flags = ['--engine', 'cosyvoice', '--voice', String(config.ttsVoice || '专业播客女生')];
+  if (Number.isFinite(config.ttsSpeed) && config.ttsSpeed > 0) flags.push('--speed', String(config.ttsSpeed));
+  if (config.ttsUrl) flags.push('--tts-url', String(config.ttsUrl));
+  return flags;
+}
+
 function announceOnce(config, text, signal) {
-  const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume), '--retries', String(config.speakerRetries ?? 1)];
+  const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume), '--retries', String(config.speakerRetries ?? 1), ...ttsFlags(config)];
   const chime = effectiveChime(config);
   if (chime) args.push('--chime', chime, '--chime-delay', String(config.chimeDelayMs ?? 2000));
   if (config.keepConnection) args.push('--keep', '--no-restore');
@@ -386,9 +401,9 @@ function announceOnce(config, text, signal) {
 
 async function fallbackPlayLocal(config, text) {
   const chime = effectiveChime(config);
-  const args = [cliPath(config), 'play', '--text', text, '--volume', String(config.volume)];
+  const args = [cliPath(config), 'play', '--text', text, '--volume', String(config.volume), ...ttsFlags(config)];
   if (chime) args.push('--chime', chime, '--chime-delay', String(config.chimeDelayMs ?? 2000));
-  const r1 = await runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: 120_000 });
+  const r1 = await runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: 180_000 });
   if (r1.ok) return { ok: true, via: 'ble-speaker-play' };
   if (process.platform === 'darwin') {
     // 最末级兜底：直接 say（也先出提示音）
@@ -442,8 +457,14 @@ async function speakOnMacOutput(config, text) {
   }
   let ok = false;
   if (process.platform === 'darwin') {
-    const r = await runCommand('say', [text], { timeoutMs: 60_000 });
+    // 优先走 ble-speaker play（带 cosyvoice 引擎与缓存），失败再裸 say
+    const args = [cliPath(config), 'play', '--text', text, '--volume', String(config.volume), ...ttsFlags(config)];
+    const r = await runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: 180_000 });
     ok = r.ok;
+    if (!ok) {
+      const r2 = await runCommand('say', [text], { timeoutMs: 60_000 });
+      ok = r2.ok;
+    }
   } else {
     const r = await runCommand(process.execPath, [cliPath(config), 'play', '--text', text], { cwd: config.bleSpeakerDir, timeoutMs: 90_000 });
     ok = r.ok;
@@ -697,6 +718,10 @@ const WRITABLE = {
   chime: boolIn,
   chimeDelayMs: numIn(0, 10_000),
   chimeFile: (v) => (typeof v === 'string' && v.trim() === '' ? v : (typeof v === 'string' && v.length <= 512 ? v : undefined)),
+  ttsEngine: (v) => ['local', 'cosyvoice'].includes(v) ? v : undefined,
+  ttsVoice: (v) => (typeof v === 'string' && v.trim() && v.length <= 64 ? v : undefined),
+  ttsSpeed: numIn(0.5, 2),
+  ttsUrl: (v) => (typeof v === 'string' && /^https?:\/\/.+/.test(v) && v.length <= 256 ? v : undefined),
   overnightDigest: boolIn,
   fallbackLocal: boolIn,
   keepAlive: boolIn, // 以下两项改后需重启（定时器在 apply 时建立）
@@ -814,7 +839,40 @@ function registerRoutes(ctx, config, state) {
         }
       },
     });
-    logLine(config, `自检路由已注册: GET ${TEST_PATH} | GET/POST ${CONFIG_PATH}`);
+    // 音色列表：代理 cosyvoice /healthz（引擎选 local 或服务未启动时返回空列表）
+    webServer.register({
+      kind: 'exact',
+      path: '/plugin-api/voice-info/voices',
+      handler: async (req, res) => {
+        const send = (status, payload) => {
+          const body = JSON.stringify(payload);
+          res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+          res.end(body);
+        };
+        try {
+          const url = `${String(config.ttsUrl || 'http://127.0.0.1:9880').replace(/\/+$/, '')}/healthz`;
+          const ac = new AbortController();
+          const timer = setTimeout(() => ac.abort(), 3000);
+          let voices = [];
+          let serverUp = false;
+          try {
+            const r = await fetch(url, { signal: ac.signal });
+            clearTimeout(timer);
+            if (r.ok) {
+              const j = await r.json();
+              voices = Array.isArray(j.voices) ? j.voices : [];
+              serverUp = true;
+            }
+          } catch {
+            clearTimeout(timer);
+          }
+          send(200, { ok: true, engine: config.ttsEngine, serverUp, voices });
+        } catch (err) {
+          send(500, { ok: false, error: String(err?.message || err) });
+        }
+      },
+    });
+    logLine(config, `自检路由已注册: GET ${TEST_PATH} | GET/POST ${CONFIG_PATH} | GET /plugin-api/voice-info/voices`);
   });
 }
 

@@ -128,6 +128,7 @@ window.__ModuleLoader__.load({
       var force = React.useReducer(function (c) { return c + 1; }, 0)[1];
       var formRef = React.useRef({});
       var msgRef = React.useRef(null);
+      var voicesState = React.useRef(null);
 
       var load = function () {
         fetchJson(CONFIG_URL).then(function (j) {
@@ -147,7 +148,10 @@ window.__ModuleLoader__.load({
               prewarm: j.config.prewarm,
               afkSkipSec: Math.round((j.config.afkSkipMs || 0) / 1000),
               chime: j.config.chime,
-              chimeDelaySec: Math.round((j.config.chimeDelayMs || 0) / 1000)
+              chimeDelaySec: Math.round((j.config.chimeDelayMs || 0) / 1000),
+              ttsEngine: j.config.ttsEngine,
+              ttsVoice: j.config.ttsVoice || "",
+              ttsSpeed: j.config.ttsSpeed || 1.0
             };
           } else {
             msgRef.current = { kind: "err", text: (j && j.error) || "配置读取失败" };
@@ -162,7 +166,15 @@ window.__ModuleLoader__.load({
       React.useEffect(function () {
         load();
         var t = setInterval(load, 5000);
-        return function () { clearInterval(t); };
+        // 音色列表低频刷新（服务启停不频繁）
+        var loadVoices = function () {
+          fetchJson("/plugin-api/voice-info/voices").then(function (j) {
+            if (j && j.ok) { voicesState.current = j; force(); }
+          }).catch(function () {});
+        };
+        loadVoices();
+        var tv = setInterval(loadVoices, 30000);
+        return function () { clearInterval(t); clearInterval(tv); };
       }, []);
 
       var f = formRef.current;
@@ -190,7 +202,10 @@ window.__ModuleLoader__.load({
           prewarm: !!f.prewarm,
           afkSkipMs: Math.max(0, Math.round(Number(f.afkSkipSec || 0) * 1000)),
           chime: !!f.chime,
-          chimeDelayMs: Math.max(0, Math.round(Number(f.chimeDelaySec || 0) * 1000))
+          chimeDelayMs: Math.max(0, Math.round(Number(f.chimeDelaySec || 0) * 1000)),
+          ttsEngine: f.ttsEngine,
+          ttsVoice: String(f.ttsVoice || "").trim(),
+          ttsSpeed: Number(f.ttsSpeed || 1.0)
         };
         fetchJson(CONFIG_URL, {
           method: "POST",
@@ -340,6 +355,37 @@ window.__ModuleLoader__.load({
           jsx.jsx("input", {
             type: "number", min: "0", max: "10", value: f.chimeDelaySec,
             onChange: function (e) { set("chimeDelaySec", Number(e.target.value)); }
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "语音引擎：cosyvoice=本地 CosyVoice 服务（音色自然，失败自动回退系统语音）", children: "语音引擎" }),
+          jsx.jsxs("select", {
+            value: f.ttsEngine,
+            onChange: function (e) { set("ttsEngine", e.target.value); },
+            children: [
+              jsx.jsx("option", { value: "cosyvoice", children: "CosyVoice" }),
+              jsx.jsx("option", { value: "local", children: "系统语音" })
+            ]
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: voicesState.current && voicesState.current.serverUp ? "CosyVoice 音色（服务在线，可选/可输入）" : "CosyVoice 音色（服务未启动，可手输）", children: "音色" }),
+          jsx.jsxs("div", { style: { flex: 1, minWidth: 0, display: "flex", gap: 6, alignItems: "center" }, children: [
+            jsx.jsx("input", {
+              type: "text", list: "vi-voices", value: f.ttsVoice,
+              style: { flex: 1, minWidth: 0, background: "var(--dsw-alias-surface-2,#1d232e)", color: "inherit", border: "1px solid var(--dsw-alias-border-subtle,#2a2f3a)", borderRadius: 8, padding: "4px 8px", fontFamily: "inherit", fontSize: 13 },
+              onChange: function (e) { set("ttsVoice", e.target.value); }
+            }),
+            jsx.jsxs("datalist", { id: "vi-voices", children: (voicesState.current && voicesState.current.voices || []).slice(0, 60).map(function (v) {
+              return jsx.jsx("option", { key: v, value: v });
+            }) })
+          ] })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "CosyVoice 语速倍率（1.0 = 正常）", children: "语速" }),
+          jsx.jsx("input", {
+            type: "number", min: "0.5", max: "2", step: "0.05", value: f.ttsSpeed,
+            onChange: function (e) { set("ttsSpeed", Number(e.target.value)); }
           })
         ] }),
         jsx.jsxs("div", { className: "vi-actions", children: [

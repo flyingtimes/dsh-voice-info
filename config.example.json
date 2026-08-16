@@ -43,6 +43,11 @@
   "chime": true,
   "chimeDelayMs": 2000,
   "chimeFile": "",
+
+  "ttsEngine": "cosyvoice",
+  "ttsVoice": "f_young_soft",
+  "ttsSpeed": 1.0,
+  "ttsUrl": "http://127.0.0.1:9880",
   "speakerRetries": 1,
 
   "overnightDigest": true,
@@ -76,6 +81,10 @@
     "chime": "播报前先播放提示音（叮咚），再出人声",
     "chimeDelayMs": "提示音结束到语音开始的间隔毫秒",
     "chimeFile": "自定义提示音文件路径；留空用内置 assets/dingdong.wav",
+    "ttsEngine": "语音引擎: cosyvoice(本地 cosyvoice-server,音色自然) | local(系统 say)",
+    "ttsVoice": "cosyvoice 音色名（GET /plugin-api/voice-info/voices 列出全部 41 个）",
+    "ttsSpeed": "cosyvoice 语速倍率",
+    "ttsUrl": "cosyvoice 服务地址",
     "keepAlive": "定期静默重连防音箱休眠（会一直占用设备，默认关；改动需重启）",
     "keepAliveIntervalMs": "保活检查间隔毫秒（改动需重启）",
     "blockedQuietPolicy": "blocked(agent 等用户确认)在静音时段的行为: local=切本机扬声器播 | speaker=照播音箱 | skip=跳过",

@@ -8,6 +8,16 @@ turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ─
           ──► ble-speaker run --keep ──► 音箱播报；失败降级本机
 ```
 
+## 语音引擎（CosyVoice）
+
+默认使用本地 [cosyvoice-server](http://127.0.0.1:9880) 合成语音——远比系统 `say` 自然，彻底告别"恐怖谷"机械感：
+
+- `ttsEngine: "cosyvoice"`（默认）/ `ttsVoice: "f_young_soft"`（柔和年轻女声）/ `ttsSpeed` / `ttsUrl`
+- 41 个音色可选：`GET /plugin-api/voice-info/voices` 列出全部；GUI 面板"音色"框带下拉建议
+- **自动回退**：cosyvoice 服务未启动/超时 → 自动降级系统 `say`，播报永不中断
+- 合成结果按 文本+音色+语速 哈希缓存在 ble-speaker 的 `cache/tts/`，重复播报零等待
+- ble-speaker CLI 需 ≥ 本仓库同步版本（`--engine cosyvoice --voice ... --speed ... --tts-url ...`）
+
 ## 播报内容（detail）
 
 | 模式 | 效果示例 |

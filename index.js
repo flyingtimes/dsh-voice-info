@@ -30,6 +30,7 @@ const PLUGIN_ROOT = path.dirname(fileURLToPath(import.meta.url));
 const TEST_PATH = '/plugin-api/voice-info/test';
 const CONFIG_PATH = '/plugin-api/voice-info/config';
 const DIGEST_FILE = path.join(PLUGIN_ROOT, 'digest-queue.json');
+const CHIME_FILE = path.join(PLUGIN_ROOT, 'assets', 'dingdong.wav');
 
 const DEFAULTS = {
   enabled: true,
@@ -81,6 +82,11 @@ const DEFAULTS = {
   // 预热与在场感知
   prewarm: true, // 轮次进行中后台预连音箱，turn/end 时秒出声
   afkSkipMs: 30_000, // 键鼠空闲低于该值视为"在场"，跳过非紧急播报；0=禁用
+
+  // 提示音（叮咚）——先出提示音再出人声，缓解语音突兀
+  chime: true,
+  chimeDelayMs: 2_000,
+  chimeFile: '', // 自定义提示音路径；空 = 内置合成的 assets/dingdong.wav
 
   // 过夜摘要
   overnightDigest: true,
@@ -364,18 +370,32 @@ function createPrewarmer(config) {
   };
 }
 
+/** 有效的提示音文件路径（chime 关闭或文件缺失返回 ''） */
+function effectiveChime(config) {
+  if (!config.chime) return '';
+  return config.chimeFile && String(config.chimeFile).trim() ? String(config.chimeFile).trim() : CHIME_FILE;
+}
+
 function announceOnce(config, text, signal) {
   const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume), '--retries', String(config.speakerRetries ?? 1)];
+  const chime = effectiveChime(config);
+  if (chime) args.push('--chime', chime, '--chime-delay', String(config.chimeDelayMs ?? 2000));
   if (config.keepConnection) args.push('--keep', '--no-restore');
   return runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: config.timeoutMs, signal });
 }
 
 async function fallbackPlayLocal(config, text) {
-  const r1 = await runCommand(process.execPath,
-    [cliPath(config), 'play', '--text', text, '--volume', String(config.volume)],
-    { cwd: config.bleSpeakerDir, timeoutMs: 90_000 });
+  const chime = effectiveChime(config);
+  const args = [cliPath(config), 'play', '--text', text, '--volume', String(config.volume)];
+  if (chime) args.push('--chime', chime, '--chime-delay', String(config.chimeDelayMs ?? 2000));
+  const r1 = await runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: 120_000 });
   if (r1.ok) return { ok: true, via: 'ble-speaker-play' };
   if (process.platform === 'darwin') {
+    // 最末级兜底：直接 say（也先出提示音）
+    if (chime) {
+      await runCommand('afplay', ['-v', String(Math.max(0, Math.min(1, config.volume))), chime], { timeoutMs: 30_000 }).catch(() => {});
+      if (config.chimeDelayMs > 0) await new Promise((r) => setTimeout(r, Math.min(config.chimeDelayMs, 10_000)));
+    }
     const r2 = await runCommand('say', [text], { timeoutMs: 60_000 });
     if (r2.ok) return { ok: true, via: 'say' };
   }
@@ -412,6 +432,14 @@ async function speakOnMacOutput(config, text) {
       }
     }
   } catch { /* 切换失败就原样播 */ }
+  // 提示音先行（输出切换完成后播放，保证从同一设备出声）
+  const chime = effectiveChime(config);
+  if (chime && process.platform === 'darwin') {
+    await runCommand('afplay', ['-v', String(Math.max(0, Math.min(1, config.volume))), chime], { timeoutMs: 30_000 }).catch(() => {});
+    if (config.chimeDelayMs > 0) {
+      await new Promise((r) => setTimeout(r, Math.min(config.chimeDelayMs, 10_000)));
+    }
+  }
   let ok = false;
   if (process.platform === 'darwin') {
     const r = await runCommand('say', [text], { timeoutMs: 60_000 });
@@ -666,6 +694,9 @@ const WRITABLE = {
   speakerRetries: numIn(1, 5),
   prewarm: boolIn,
   afkSkipMs: numIn(0, 3_600_000),
+  chime: boolIn,
+  chimeDelayMs: numIn(0, 10_000),
+  chimeFile: (v) => (typeof v === 'string' && v.trim() === '' ? v : (typeof v === 'string' && v.length <= 512 ? v : undefined)),
   overnightDigest: boolIn,
   fallbackLocal: boolIn,
   keepAlive: boolIn, // 以下两项改后需重启（定时器在 apply 时建立）

@@ -145,7 +145,9 @@ window.__ModuleLoader__.load({
               blockedQuietPolicy: j.config.blockedQuietPolicy,
               overnightDigest: j.config.overnightDigest,
               prewarm: j.config.prewarm,
-              afkSkipSec: Math.round((j.config.afkSkipMs || 0) / 1000)
+              afkSkipSec: Math.round((j.config.afkSkipMs || 0) / 1000),
+              chime: j.config.chime,
+              chimeDelaySec: Math.round((j.config.chimeDelayMs || 0) / 1000)
             };
           } else {
             msgRef.current = { kind: "err", text: (j && j.error) || "配置读取失败" };
@@ -186,7 +188,9 @@ window.__ModuleLoader__.load({
           blockedQuietPolicy: f.blockedQuietPolicy,
           overnightDigest: !!f.overnightDigest,
           prewarm: !!f.prewarm,
-          afkSkipMs: Math.max(0, Math.round(Number(f.afkSkipSec || 0) * 1000))
+          afkSkipMs: Math.max(0, Math.round(Number(f.afkSkipSec || 0) * 1000)),
+          chime: !!f.chime,
+          chimeDelayMs: Math.max(0, Math.round(Number(f.chimeDelaySec || 0) * 1000))
         };
         fetchJson(CONFIG_URL, {
           method: "POST",
@@ -321,6 +325,21 @@ window.__ModuleLoader__.load({
           jsx.jsx("input", {
             type: "number", min: "0", max: "3600", value: f.afkSkipSec,
             onChange: function (e) { set("afkSkipSec", Number(e.target.value)); }
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "播报前先播放叮咚提示音，再出人声", children: "提示音" }),
+          jsx.jsx("input", {
+            type: "checkbox",
+            checked: !!f.chime,
+            onChange: function (e) { set("chime", e.target.checked); }
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "提示音结束到语音开始的间隔", children: "提示间隔(秒)" }),
+          jsx.jsx("input", {
+            type: "number", min: "0", max: "10", value: f.chimeDelaySec,
+            onChange: function (e) { set("chimeDelaySec", Number(e.target.value)); }
           })
         ] }),
         jsx.jsxs("div", { className: "vi-actions", children: [

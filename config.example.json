@@ -39,6 +39,10 @@
   "cancelOnNewTurn": true,
   "prewarm": true,
   "afkSkipMs": 30000,
+
+  "chime": true,
+  "chimeDelayMs": 2000,
+  "chimeFile": "",
   "speakerRetries": 1,
 
   "overnightDigest": true,
@@ -69,6 +73,9 @@
     "cancelOnNewTurn": "用户新开一轮时取消未播/播报中的旧通知（迟到通知只剩困惑）",
     "prewarm": "轮次进行中后台预连音箱，turn/end 播报时秒出声",
     "afkSkipMs": "键鼠空闲低于该毫秒数视为在场，跳过非紧急播报（人在电脑前时语音是噪音）；0=禁用",
+    "chime": "播报前先播放提示音（叮咚），再出人声",
+    "chimeDelayMs": "提示音结束到语音开始的间隔毫秒",
+    "chimeFile": "自定义提示音文件路径；留空用内置 assets/dingdong.wav",
     "keepAlive": "定期静默重连防音箱休眠（会一直占用设备，默认关；改动需重启）",
     "keepAliveIntervalMs": "保活检查间隔毫秒（改动需重启）",
     "blockedQuietPolicy": "blocked(agent 等用户确认)在静音时段的行为: local=切本机扬声器播 | speaker=照播音箱 | skip=跳过",

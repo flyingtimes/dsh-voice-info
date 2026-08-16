@@ -17,6 +17,15 @@ turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ─
 | `excerpt` | 「主人，任务完成了：修复了登录超时问题」（本轮助手回复的清洗摘录） |
 | `llm`（默认） | 「主人，任务完成了。修复了登录超时并补了测试」（小 LLM 调用压缩本轮结果，失败逐级回退 excerpt→template→fixed） |
 
+## 提示音（叮咚先行）
+
+每次播报前先播放内置「叮咚」提示音，间隔 2 秒再出人声——避免突然的人声吓到人：
+
+- `chime: true`（默认开）/ `chimeDelayMs: 2000`，`chimeFile` 可换成自定义音频
+- 内置提示音为纯 Node 合成（`assets/make-chime.mjs` 生成 `assets/dingdong.wav`，G#5→Eb5 双音衰减，无第三方音源）
+- 提示音在**目标输出设备上**播放（音箱路径切完输出后先叮咚；本机回退路径同样带），保证提示音和人声同一设备
+- ble-speaker CLI 需 ≥ 本仓库同步版本（`--chime` / `--chime-delay` 标志）
+
 ## 阻塞提醒（agent 在等你）
 
 `reason=blocked`（agent 停下等确认/审批）走**紧急通道**：

@@ -67,12 +67,16 @@ const DEFAULTS = {
 
   // 可靠性
   fallbackLocal: true,
+  speakerRetries: 1, // 音箱连接尝试次数：失败立即降级本机，避免长重试拖慢播报
   keepAlive: false,
   keepAliveIntervalMs: 120_000,
 
   // 阻塞提醒（agent 等用户确认）
   blockedQuietPolicy: 'local', // skip | local | speaker
   blockedBypassCooldown: true,
+
+  // 迟到通知治理
+  cancelOnNewTurn: true, // 用户新开一轮时取消未播/播报中的旧通知
 
   // 过夜摘要
   overnightDigest: true,
@@ -115,8 +119,8 @@ function logLine(config, message) {
   } catch { /* ignore */ }
 }
 
-/** 通用子进程执行（永不抛出，返回 {ok, exitCode, stdout, stderr}） */
-function runCommand(cmd, args, { cwd, timeoutMs }) {
+/** 通用子进程执行（永不抛出，返回 {ok, exitCode, stdout, stderr}；signal 中止→exitCode='aborted'） */
+function runCommand(cmd, args, { cwd, timeoutMs, signal }) {
   return new Promise((resolve) => {
     const child = spawn(cmd, args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
@@ -126,12 +130,21 @@ function runCommand(cmd, args, { cwd, timeoutMs }) {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener?.('abort', onAbort);
       resolve({ ok, exitCode: code, stdout, stderr: stderr.slice(-1500) });
     };
     const timer = setTimeout(() => {
       try { child.kill('SIGKILL'); } catch { /* ignore */ }
       finish(false, 'timeout');
     }, timeoutMs);
+    const onAbort = () => {
+      try { child.kill('SIGKILL'); } catch { /* ignore */ }
+      finish(false, 'aborted');
+    };
+    if (signal) {
+      if (signal.aborted) { onAbort(); return; }
+      signal.addEventListener?.('abort', onAbort);
+    }
     child.stdout?.on('data', (c) => { stdout += c.toString('utf8'); });
     child.stderr?.on('data', (c) => { stderr += c.toString('utf8'); });
     child.on('error', (err) => {
@@ -304,10 +317,10 @@ function msUntilNextOccurrence(minutes, now = new Date()) {
 
 const cliPath = (config) => path.join(config.bleSpeakerDir, 'src', 'cli.js');
 
-function announceOnce(config, text) {
-  const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume)];
+function announceOnce(config, text, signal) {
+  const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume), '--retries', String(config.speakerRetries ?? 1)];
   if (config.keepConnection) args.push('--keep', '--no-restore');
-  return runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: config.timeoutMs });
+  return runCommand(process.execPath, args, { cwd: config.bleSpeakerDir, timeoutMs: config.timeoutMs, signal });
 }
 
 async function fallbackPlayLocal(config, text) {
@@ -401,11 +414,17 @@ function createDigest(ctx, config, announcer) {
 
   async function fire() {
     if (!queue.length) { schedule(); return; }
+    const entries = queue.slice();
     const text = await buildText();
     queue = [];
     persist();
     logLine(config, `过夜摘要播报: ${text}`);
-    await announcer.trigger(text, { manual: true });
+    const outcome = await announcer.trigger(text, { manual: true });
+    if (outcome && outcome.cancelled) {
+      // 被新轮次取消 → 原条目重新入队，等下次排程补播
+      for (const e of entries) enqueue(e);
+      logLine(config, `过夜摘要被取消，${entries.length} 条已重新入队`);
+    }
     schedule();
   }
 
@@ -442,21 +461,27 @@ function createDigest(ctx, config, announcer) {
 /* ---------------- 播报器 ---------------- */
 
 function createAnnouncer(config, digestRef) {
-  let running = false;
-  let pending = 0;
+  const queue = []; // 待播项 {text, opts, done}
+  let draining = false;
+  let current = null; // 进行中项 {text, ac}
   let lastAnnounceAt = 0;
   const status = { lastOutcome: null, lastText: '', lastAt: 0 };
 
-  async function speakOnce(text) {
+  async function speakOnce(text, signal) {
     const started = Date.now();
-    const result = await announceOnce(config, text);
+    logLine(config, `开始播报: ${text}`);
+    const result = await announceOnce(config, text, signal);
     const secs = ((Date.now() - started) / 1000).toFixed(1);
     if (result.ok) {
       status.lastOutcome = 'ok';
       status.lastText = text;
       status.lastAt = Date.now();
       logLine(config, `播报完成 (${secs}s): ${text}`);
-      return;
+      return { played: true };
+    }
+    if (result.exitCode === 'aborted') {
+      logLine(config, `播报被取消 (${secs}s): ${text}`);
+      return { cancelled: true };
     }
     status.lastOutcome = 'error';
     status.lastText = text;
@@ -468,66 +493,96 @@ function createAnnouncer(config, digestRef) {
       if (fb.ok) logLine(config, `本机回退成功 (via ${fb.via})`);
       else logLine(config, '本机回退也失败，本次通知无声');
     }
+    return { played: config.fallbackLocal };
   }
 
-  /**
-   * @param {object} opts
-   *  - manual: 手动试听（豁免静音/冷却）
-   *  - urgent: 阻塞提醒（豁免冷却；静音时段按 blockedQuietPolicy）
-   */
-  async function trigger(text, { manual = false, urgent = false } = {}) {
-    pending++;
-    if (running) {
-      logLine(config, `播报进行中，合并本次触发（排队 ${pending}）`);
-      return;
-    }
-    running = true;
+  async function drain() {
+    if (draining) return;
+    draining = true;
     try {
-      while (pending > 0) {
-        pending--;
+      while (queue.length) {
+        const item = queue.shift();
+        const { text } = item;
+        const { manual = false, urgent = false } = item.opts || {};
+        let outcome = {};
         const qh = parseQuietHours(config); // 每次重解析：POST 改配置即时生效
         const quiet = !manual && inQuietHours(qh);
         if (quiet) {
           if (urgent && config.blockedQuietPolicy === 'speaker') {
             logLine(config, `阻塞提醒豁免静音时段，照常音箱播报: ${text}`);
+            const ac = new AbortController();
+            current = { text, ac };
             lastAnnounceAt = Date.now();
-            await speakOnce(text);
-            continue;
-          }
-          if (urgent && config.blockedQuietPolicy === 'local') {
+            outcome = await speakOnce(text, ac.signal);
+            current = null;
+          } else if (urgent && config.blockedQuietPolicy === 'local') {
             logLine(config, `静音时段阻塞提醒走本机播放: ${text}`);
             const ok = await speakOnMacOutput(config, text);
             status.lastOutcome = ok ? 'ok' : 'error';
             status.lastText = text;
             status.lastAt = Date.now();
             if (!ok) logLine(config, '本机播放失败，阻塞提醒无声');
-            continue;
-          }
-          if (config.overnightDigest && digestRef.current && !urgent) {
+          } else if (config.overnightDigest && digestRef.current && !urgent) {
             digestRef.current.enqueue({ text, reason: 'completed' });
             logLine(config, `静音时段，已入过夜摘要队列 (共 ${digestRef.current.size()} 条): ${text}`);
           } else {
             logLine(config, `静音时段跳过播报 (${config.quietHours.join('-')}): ${text}`);
           }
-          continue;
+        } else {
+          const bypassCooldown = manual || (urgent && config.blockedBypassCooldown);
+          if (!bypassCooldown && config.cooldownMs > 0 && Date.now() - lastAnnounceAt < config.cooldownMs) {
+            logLine(config, `冷却中跳过播报 (距上次 ${Math.round((Date.now() - lastAnnounceAt) / 1000)}s < ${Math.round(config.cooldownMs / 1000)}s): ${text}`);
+          } else {
+            const ac = new AbortController();
+            current = { text, ac };
+            lastAnnounceAt = Date.now();
+            outcome = await speakOnce(text, ac.signal);
+            current = null;
+          }
         }
-        const bypassCooldown = manual || (urgent && config.blockedBypassCooldown);
-        if (!bypassCooldown && config.cooldownMs > 0 && Date.now() - lastAnnounceAt < config.cooldownMs) {
-          logLine(config, `冷却中跳过播报 (距上次 ${Math.round((Date.now() - lastAnnounceAt) / 1000)}s < ${Math.round(config.cooldownMs / 1000)}s): ${text}`);
-          continue;
-        }
-        lastAnnounceAt = Date.now();
-        await speakOnce(text);
+        item.done?.(outcome);
       }
     } finally {
-      running = false;
+      draining = false;
+      current = null;
     }
+  }
+
+  /**
+   * 入队一条播报。resolve 于该条处理完，携带 {played}/{cancelled}。
+   * @param {object} opts
+   *  - manual: 手动试听（豁免静音/冷却）
+   *  - urgent: 阻塞提醒（豁免冷却；静音时段按 blockedQuietPolicy）
+   */
+  function trigger(text, opts = {}) {
+    return new Promise((resolve) => {
+      queue.push({ text, opts, done: resolve });
+      if (draining) logLine(config, `播报进行中，合并本次触发（排队 ${queue.length}）`);
+      drain();
+    });
+  }
+
+  /**
+   * 取消所有待播与播报中的通知（用户新开一轮 = 人在电脑前，迟到的通知只剩困惑）。
+   * 返回取消条数。
+   */
+  function cancelAll(reason) {
+    let n = queue.length;
+    for (const item of queue.splice(0)) item.done?.({ cancelled: true });
+    const inflight = current;
+    if (inflight) {
+      inflight.ac.abort();
+      n++;
+    }
+    if (n) logLine(config, `${reason}，取消 ${n} 条未播/播报中的通知`);
+    return n;
   }
 
   return {
     trigger,
+    cancelAll,
     status,
-    isBusy: () => running,
+    isBusy: () => draining,
     quietHoursActive: () => inQuietHours(parseQuietHours(config)),
   };
 }
@@ -555,6 +610,8 @@ const WRITABLE = {
   goalDebounceMs: numIn(1000, 3_600_000),
   blockedQuietPolicy: (v) => ['skip', 'local', 'speaker'].includes(v) ? v : undefined,
   blockedBypassCooldown: boolIn,
+  cancelOnNewTurn: boolIn,
+  speakerRetries: numIn(1, 5),
   overnightDigest: boolIn,
   fallbackLocal: boolIn,
   keepAlive: boolIn, // 以下两项改后需重启（定时器在 apply 时建立）
@@ -701,11 +758,10 @@ export function apply(ctx) {
   const cap = (m) => { if (m.size > 256) m.clear(); };
 
   const manualAnnounce = () => {
-    buildAnnounceText(ctx, config, { reason: 'completed', durationMs: undefined, material: undefined })
-      .then((text) => {
-        logLine(config, `手动测试播报: ${text}`);
-        return announcer.trigger(text, { manual: true });
-      })
+    // 试听用专属文案：不说"任务完成"，避免与真实完成通知混淆
+    const text = '主人，这是一条测试播报';
+    logLine(config, `手动测试播报: ${text}`);
+    announcer.trigger(text, { manual: true })
       .catch((err) => logLine(config, `播报异常: ${err?.message || err}`));
   };
 
@@ -737,6 +793,9 @@ export function apply(ctx) {
       if (event.type === 'turn/start') {
         turnStarts.set(sid, Number.isSafeInteger(event.time) ? event.time : Date.now());
         cancelPendingGoal(sid);
+        // 人在电脑前开始新一轮：迟到的旧通知只剩困惑，直接取消
+        if (config.skipSubagents && !isTop) return;
+        if (config.cancelOnNewTurn !== false) announcer.cancelAll('新轮次开始');
         return;
       }
 

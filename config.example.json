@@ -36,6 +36,9 @@
   "blockedQuietPolicy": "local",
   "blockedBypassCooldown": true,
 
+  "cancelOnNewTurn": true,
+  "speakerRetries": 1,
+
   "overnightDigest": true,
   "digestMaxEntries": 100,
 
@@ -60,6 +63,8 @@
     "goalAware": "goal 自动续跑只在整段结束（debounce 窗口内无新轮次）时播报",
     "goalDebounceMs": "goal 末轮结束后等待新轮次的时间窗毫秒",
     "fallbackLocal": "播报失败时降级本机播放（ble-speaker play → say）",
+    "speakerRetries": "音箱连接尝试次数（默认 1：失败立即降级本机，避免长重试延迟）",
+    "cancelOnNewTurn": "用户新开一轮时取消未播/播报中的旧通知（迟到通知只剩困惑）",
     "keepAlive": "定期静默重连防音箱休眠（会一直占用设备，默认关；改动需重启）",
     "keepAliveIntervalMs": "保活检查间隔毫秒（改动需重启）",
     "blockedQuietPolicy": "blocked(agent 等用户确认)在静音时段的行为: local=切本机扬声器播 | speaker=照播音箱 | skip=跳过",

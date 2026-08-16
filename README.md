@@ -53,7 +53,9 @@ turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ─
 
 ## 可靠性
 
-- **本机回退**（`fallbackLocal`）：音箱播报失败（超时/连不上/设备休眠）时自动降级 `ble-speaker play` → `say`
+- **快速失败**（`speakerRetries: 1`）：音箱不可达/休眠时一次尝试即失败，立即降级本机播放——不会为重试空等一分多钟
+- **迟到通知取消**（`cancelOnNewTurn: true`）：用户新开一轮时自动取消未播/播报中的旧通知（你已在电脑前，迟到的"任务完成"只剩困惑）；过夜摘要被取消会重新入队
+- **本机回退**（`fallbackLocal`）：音箱播报失败时自动降级 `ble-speaker play` → `say`
 - **连接保活**（`keepAlive`，默认关）：定期静默重连防音箱休眠
 - **自检路由**：`http://127.0.0.1:3080/plugin-api/voice-info/test`（状态/配置/日志），`?announce=1` 试听
 - **配置路由**：`GET/POST /plugin-api/voice-info/config`（白名单校验、持久化、即时生效）

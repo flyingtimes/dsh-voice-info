@@ -37,6 +37,8 @@
   "blockedBypassCooldown": true,
 
   "cancelOnNewTurn": true,
+  "prewarm": true,
+  "afkSkipMs": 30000,
   "speakerRetries": 1,
 
   "overnightDigest": true,
@@ -65,6 +67,8 @@
     "fallbackLocal": "播报失败时降级本机播放（ble-speaker play → say）",
     "speakerRetries": "音箱连接尝试次数（默认 1：失败立即降级本机，避免长重试延迟）",
     "cancelOnNewTurn": "用户新开一轮时取消未播/播报中的旧通知（迟到通知只剩困惑）",
+    "prewarm": "轮次进行中后台预连音箱，turn/end 播报时秒出声",
+    "afkSkipMs": "键鼠空闲低于该毫秒数视为在场，跳过非紧急播报（人在电脑前时语音是噪音）；0=禁用",
     "keepAlive": "定期静默重连防音箱休眠（会一直占用设备，默认关；改动需重启）",
     "keepAliveIntervalMs": "保活检查间隔毫秒（改动需重启）",
     "blockedQuietPolicy": "blocked(agent 等用户确认)在静音时段的行为: local=切本机扬声器播 | speaker=照播音箱 | skip=跳过",

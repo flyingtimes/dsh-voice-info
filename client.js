@@ -143,7 +143,9 @@ window.__ModuleLoader__.load({
               cooldownSec: Math.round((j.config.cooldownMs || 0) / 1000),
               minDurationSec: Math.round((j.config.minDurationMs || 0) / 1000),
               blockedQuietPolicy: j.config.blockedQuietPolicy,
-              overnightDigest: j.config.overnightDigest
+              overnightDigest: j.config.overnightDigest,
+              prewarm: j.config.prewarm,
+              afkSkipSec: Math.round((j.config.afkSkipMs || 0) / 1000)
             };
           } else {
             msgRef.current = { kind: "err", text: (j && j.error) || "配置读取失败" };
@@ -182,7 +184,9 @@ window.__ModuleLoader__.load({
           cooldownMs: Math.max(0, Math.round(Number(f.cooldownSec || 0) * 1000)),
           minDurationMs: Math.max(0, Math.round(Number(f.minDurationSec || 0) * 1000)),
           blockedQuietPolicy: f.blockedQuietPolicy,
-          overnightDigest: !!f.overnightDigest
+          overnightDigest: !!f.overnightDigest,
+          prewarm: !!f.prewarm,
+          afkSkipMs: Math.max(0, Math.round(Number(f.afkSkipSec || 0) * 1000))
         };
         fetchJson(CONFIG_URL, {
           method: "POST",
@@ -302,6 +306,21 @@ window.__ModuleLoader__.load({
             type: "checkbox",
             checked: !!f.overnightDigest,
             onChange: function (e) { set("overnightDigest", e.target.checked); }
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "轮次进行中后台预连音箱，播报时秒出声", children: "预热连接" }),
+          jsx.jsx("input", {
+            type: "checkbox",
+            checked: !!f.prewarm,
+            onChange: function (e) { set("prewarm", e.target.checked); }
+          })
+        ] }),
+        jsx.jsxs("div", { className: "vi-row", children: [
+          jsx.jsx("label", { title: "键鼠空闲低于该值=你在电脑前，跳过非紧急播报（阻塞提醒不受限）；0=禁用", children: "在场跳过(秒)" }),
+          jsx.jsx("input", {
+            type: "number", min: "0", max: "3600", value: f.afkSkipSec,
+            onChange: function (e) { set("afkSkipSec", Number(e.target.value)); }
           })
         ] }),
         jsx.jsxs("div", { className: "vi-actions", children: [

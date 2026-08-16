@@ -78,6 +78,10 @@ const DEFAULTS = {
   // 迟到通知治理
   cancelOnNewTurn: true, // 用户新开一轮时取消未播/播报中的旧通知
 
+  // 预热与在场感知
+  prewarm: true, // 轮次进行中后台预连音箱，turn/end 时秒出声
+  afkSkipMs: 30_000, // 键鼠空闲低于该值视为"在场"，跳过非紧急播报；0=禁用
+
   // 过夜摘要
   overnightDigest: true,
   digestMaxEntries: 100,
@@ -317,6 +321,49 @@ function msUntilNextOccurrence(minutes, now = new Date()) {
 
 const cliPath = (config) => path.join(config.bleSpeakerDir, 'src', 'cli.js');
 
+/** 用户键鼠空闲时长（ms）；非 darwin 或读取失败返回 null（视为未知，不拦截） */
+async function getUserIdleMs() {
+  if (Number.isFinite(Number(process.env.VI_TEST_IDLE_MS))) return Number(process.env.VI_TEST_IDLE_MS);
+  if (process.platform !== 'darwin') return null;
+  const r = await runCommand('sh', ['-c', "ioreg -c IOHIDSystem | awk '/HIDIdleTime/ {print $NF; exit}'"], { timeoutMs: 3000 });
+  if (!r.ok) return null;
+  const ns = Number(String(r.stdout).trim());
+  return Number.isFinite(ns) && ns >= 0 ? Math.round(ns / 1e6) : null;
+}
+
+/** 用户在场（最近 afkSkipMs 内有键鼠操作）→ 语音通知无意义 */
+async function isUserPresent(config) {
+  if (!config.afkSkipMs || config.afkSkipMs <= 0) return false;
+  const idle = await getUserIdleMs();
+  return idle !== null && idle < config.afkSkipMs;
+}
+
+/** 后台预连音箱：轮次进行中把连接建立好，播报时秒出声 */
+function createPrewarmer(config) {
+  let inFlight = false;
+  let lastDoneAt = 0;
+  return {
+    async warm(reason) {
+      if (!config.prewarm || inFlight) return;
+      if (Date.now() - lastDoneAt < 60_000) return; // 1 分钟内不重复预热
+      const qh = parseQuietHours(config);
+      if (inQuietHours(qh) && config.blockedQuietPolicy !== 'speaker') return; // 静音期不出声，预热无意义
+      inFlight = true;
+      const started = Date.now();
+      try {
+        const r = await runCommand(process.execPath,
+          [cliPath(config), 'connect', config.device, '--retries', String(config.speakerRetries ?? 1)],
+          { cwd: config.bleSpeakerDir, timeoutMs: 60_000 });
+        lastDoneAt = Date.now();
+        if (r.ok) logLine(config, `预热成功 (${((Date.now() - started) / 1000).toFixed(1)}s, ${reason}): 音箱已就绪`);
+        else logLine(config, `预热失败 (${reason}): 音箱不可达，播报时将走本机回退`);
+      } finally {
+        inFlight = false;
+      }
+    },
+  };
+}
+
 function announceOnce(config, text, signal) {
   const args = [cliPath(config), 'run', config.device, '--text', text, '--volume', String(config.volume), '--retries', String(config.speakerRetries ?? 1)];
   if (config.keepConnection) args.push('--keep', '--no-restore');
@@ -529,15 +576,20 @@ function createAnnouncer(config, digestRef) {
             logLine(config, `静音时段跳过播报 (${config.quietHours.join('-')}): ${text}`);
           }
         } else {
-          const bypassCooldown = manual || (urgent && config.blockedBypassCooldown);
-          if (!bypassCooldown && config.cooldownMs > 0 && Date.now() - lastAnnounceAt < config.cooldownMs) {
-            logLine(config, `冷却中跳过播报 (距上次 ${Math.round((Date.now() - lastAnnounceAt) / 1000)}s < ${Math.round(config.cooldownMs / 1000)}s): ${text}`);
+          // 在场感知：用户正在电脑前（键鼠活跃），非紧急播报无意义
+          if (!manual && !urgent && await isUserPresent(config)) {
+            logLine(config, `用户在场（键鼠活跃），跳过播报: ${text}`);
           } else {
-            const ac = new AbortController();
-            current = { text, ac };
-            lastAnnounceAt = Date.now();
-            outcome = await speakOnce(text, ac.signal);
-            current = null;
+            const bypassCooldown = manual || (urgent && config.blockedBypassCooldown);
+            if (!bypassCooldown && config.cooldownMs > 0 && Date.now() - lastAnnounceAt < config.cooldownMs) {
+              logLine(config, `冷却中跳过播报 (距上次 ${Math.round((Date.now() - lastAnnounceAt) / 1000)}s < ${Math.round(config.cooldownMs / 1000)}s): ${text}`);
+            } else {
+              const ac = new AbortController();
+              current = { text, ac };
+              lastAnnounceAt = Date.now();
+              outcome = await speakOnce(text, ac.signal);
+              current = null;
+            }
           }
         }
         item.done?.(outcome);
@@ -612,6 +664,8 @@ const WRITABLE = {
   blockedBypassCooldown: boolIn,
   cancelOnNewTurn: boolIn,
   speakerRetries: numIn(1, 5),
+  prewarm: boolIn,
+  afkSkipMs: numIn(0, 3_600_000),
   overnightDigest: boolIn,
   fallbackLocal: boolIn,
   keepAlive: boolIn, // 以下两项改后需重启（定时器在 apply 时建立）
@@ -745,9 +799,10 @@ export function apply(ctx) {
   const digestRef = { current: null };
   const announcer = createAnnouncer(config, digestRef);
   const digest = createDigest(ctx, config, announcer);
+  const prewarmer = createPrewarmer(config);
   digestRef.current = digest;
 
-  logLine(config, `已启用: device=${config.device} detail=${config.detail} keep=${config.keepConnection} minDuration=${Math.round(config.minDurationMs / 1000)}s cooldown=${Math.round(config.cooldownMs / 1000)}s quiet=${JSON.stringify(config.quietHours)} goalAware=${config.goalAware} blockedPolicy=${config.blockedQuietPolicy} digest=${config.overnightDigest}`);
+  logLine(config, `已启用: device=${config.device} detail=${config.detail} keep=${config.keepConnection} minDuration=${Math.round(config.minDurationMs / 1000)}s cooldown=${Math.round(config.cooldownMs / 1000)}s quiet=${JSON.stringify(config.quietHours)} goalAware=${config.goalAware} blockedPolicy=${config.blockedQuietPolicy} digest=${config.overnightDigest} prewarm=${config.prewarm} afkSkip=${Math.round(config.afkSkipMs / 1000)}s`);
 
   // ---- 会话状态跟踪 ----
   const turnStarts = new Map();
@@ -796,6 +851,8 @@ export function apply(ctx) {
         // 人在电脑前开始新一轮：迟到的旧通知只剩困惑，直接取消
         if (config.skipSubagents && !isTop) return;
         if (config.cancelOnNewTurn !== false) announcer.cancelAll('新轮次开始');
+        // 预热：轮次进行中把音箱连接建好，播报时秒出声（fire-and-forget）
+        prewarmer.warm(`session=${sid}`).catch(() => {});
         return;
       }
 

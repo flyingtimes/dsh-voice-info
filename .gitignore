@@ -1,0 +1,7 @@
+# 运行时状态与本机配置不入库
+config.json
+digest-queue.json
+*.log
+
+node_modules/
+.DS_Store

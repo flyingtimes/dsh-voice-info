@@ -1,0 +1,46 @@
+{
+  "name": "dsh-voice-info",
+  "version": "0.2.0",
+  "description": "Voice notification for DeepSeek Harness: after each top-level conversation turn, speak a contextual summary over a Bluetooth speaker (kept connected) via the ble-speaker CLI. Adds do-not-disturb (quiet hours / cooldown / goal-aware), blocked-agent alerts, overnight digest, and a GUI settings panel.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime"
+      ],
+      "immediately": true
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/flyingtimes/dsh-voice-info.git"
+  },
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "voice",
+    "bluetooth",
+    "ble-speaker",
+    "tts"
+  ]
+}

@@ -1,7 +1,7 @@
 {
   "name": "dsh-voice-info",
-  "version": "0.2.0",
-  "description": "Voice notification for DeepSeek Harness: after each top-level conversation turn, speak a contextual summary over a Bluetooth speaker (kept connected) via the ble-speaker CLI. Adds do-not-disturb (quiet hours / cooldown / goal-aware), blocked-agent alerts, overnight digest, and a GUI settings panel.",
+  "version": "0.3.0",
+  "description": "Voice announcements for DeepSeek Harness: after each conversation turn, play a chime then a natural CosyVoice summary over a Bluetooth speaker (kept connected) via the ble-speaker CLI. Do-not-disturb (quiet hours / cooldown / AFK-aware), blocked-agent alerts, overnight digest, prewarmed connections, and a GUI settings panel.",
   "type": "module",
   "main": "index.js",
   "exports": {

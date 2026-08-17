@@ -1,22 +1,44 @@
-# dsh-voice-info
+# dsh-voice-info 🔊
 
-DeepSeek Harness 语音播报插件：主对话轮次结束后，通过配套的 ble-speaker CLI 连接蓝牙音箱播放语音通知，播放完**保持连接**不断开。
+DeepSeek Harness 语音播报插件：主对话轮次结束后，通过配套的 [ble-speaker](../ble-speaker) CLI 连接蓝牙音箱，用 **CosyVoice 自然人声**播报任务结果，播放完**保持连接**不断开。
+
+一句话：`agent 跑完任务 → 🔔 叮咚 →（2秒）→ 柔和女声"主人，我的任务完成了，用时3分钟"`
+
+## 功能总览
+
+| 类别 | 能力 |
+| --- | --- |
+| 🗣 语音 | 本地 CosyVoice 服务合成（41 音色，默认 `f_young_soft` 柔和女声），服务不可用自动回退系统 TTS |
+| 🔔 提示音 | 人声前先播"叮咚"（纯 Node 合成），间隔 2 秒，杜绝突然出声的惊吓感 |
+| 📝 文案 | 四档逐级兜底：LLM 一句话摘要 → 结果摘录 → 原因+时长模板 → 固定句 |
+| 🚨 阻塞提醒 | agent 等你确认时立即播报，豁免时长/冷却/在场检查；夜间走本机扬声器 |
+| 🌙 免打扰 | 静音时段（凌晨 1–7 点）/ 播报冷却 / goal 续跑合并 / 在场感知（键鼠活跃=跳过） |
+| 📮 过夜摘要 | 静音时段的播报入队，早上 7 点汇总成一句播报（LLM 压缩），重启不丢 |
+| ⚡ 低延迟 | 轮次进行中后台预热音箱连接；音箱休眠 25 秒快速失败转本机；新轮次自动取消迟到通知 |
+| 🖥 GUI | 侧栏状态入口 + 设置面板（全部配置即时生效免重启）；HTTP 配置/自检/音色路由 |
+
+## 播报流水线
 
 ```
-turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ──► [时长≥1分钟?]
-          ──► [静音时段?] ──入队过夜摘要──► ──► [冷却?] ──► 生成文本(detail四档)
-          ──► ble-speaker run --keep ──► 音箱播报；失败降级本机
+turn/start ──► 后台预热音箱连接（fire-and-forget）
+turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道]
+          ──► [时长≥1分钟?] ──► [静音时段? ─入队过夜摘要]
+          ──► [用户在场? 键鼠活跃→跳过] ──► [冷却?]
+          ──► 生成文本(fixed/template/excerpt/llm)
+          ──► ble-speaker run --keep --engine cosyvoice
+          ──► 🔔 叮咚 → 2s → 🗣 CosyVoice 语音
+          ──► 失败？→ 本机播放 → 裸 say 兜底
+新 turn/start ──► 取消一切未播/播报中的迟到通知
 ```
 
 ## 语音引擎（CosyVoice）
 
-默认使用本地 [cosyvoice-server](http://127.0.0.1:9880) 合成语音——远比系统 `say` 自然，彻底告别"恐怖谷"机械感：
+默认使用本地 [cosyvoice-server](https://github.com/)（OpenAI 兼容 API，默认 `127.0.0.1:9880`）合成语音：
 
-- `ttsEngine: "cosyvoice"`（默认）/ `ttsVoice: "f_young_soft"`（柔和年轻女声）/ `ttsSpeed` / `ttsUrl`
-- 41 个音色可选：`GET /plugin-api/voice-info/voices` 列出全部；GUI 面板"音色"框带下拉建议
-- **自动回退**：cosyvoice 服务未启动/超时 → 自动降级系统 `say`，播报永不中断
-- 合成结果按 文本+音色+语速 哈希缓存在 ble-speaker 的 `cache/tts/`，重复播报零等待
-- ble-speaker CLI 需 ≥ 本仓库同步版本（`--engine cosyvoice --voice ... --speed ... --tts-url ...`）
+- `ttsEngine: "cosyvoice"`（默认）/ `ttsVoice: "f_young_soft"` / `ttsSpeed: 1.0` / `ttsUrl`
+- 41 个音色：`GET /plugin-api/voice-info/voices` 实时列出；GUI 面板音色框带下拉建议
+- **自动回退**：服务未启动/超时 → 系统 `say` → 插件裸 `say` 兜底，播报永不中断
+- 合成按 文本+音色+语速 哈希缓存在 ble-speaker `cache/tts/`，重复播报零等待
 
 ## 播报内容（detail）
 
@@ -29,23 +51,19 @@ turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ─
 
 ## 提示音（叮咚先行）
 
-每次播报前先播放内置「叮咚」提示音，间隔 2 秒再出人声——避免突然的人声吓到人：
-
-- `chime: true`（默认开）/ `chimeDelayMs: 2000`，`chimeFile` 可换成自定义音频
-- 内置提示音为纯 Node 合成（`assets/make-chime.mjs` 生成 `assets/dingdong.wav`，G#5→Eb5 双音衰减，无第三方音源）
-- 提示音在**目标输出设备上**播放（音箱路径切完输出后先叮咚；本机回退路径同样带），保证提示音和人声同一设备
-- ble-speaker CLI 需 ≥ 本仓库同步版本（`--chime` / `--chime-delay` 标志）
+- `chime: true`（默认开）/ `chimeDelayMs: 2000`，`chimeFile` 可换自定义音频
+- 内置提示音纯 Node 合成（`assets/make-chime.mjs`：G#5→Eb5 双音指数衰减，1.25s，无第三方音源）
+- 提示音在**目标输出设备**上播放（切完输出后先叮咚），与人声同设备
 
 ## 阻塞提醒（agent 在等你）
 
 `reason=blocked`（agent 停下等确认/审批）走**紧急通道**：
 
-- 豁免时长门槛（短轮也播）与冷却（`blockedBypassCooldown`）
-- 静音时段行为由 `blockedQuietPolicy` 决定：
-  - `local`（默认）：临时把系统输出切到本机扬声器 → `say` → 切回音箱（夜里也不吵音箱、但你能听到）
-  - `speaker`：照常音箱播报
-  - `skip`：静音期直接跳过
-- 文案模板：`templates.blocked` =「主人，我在等你确认，请回来处理」
+- 豁免时长门槛、冷却、在场检查——等你确认的事，人在也要喊
+- 夜间行为由 `blockedQuietPolicy` 决定：
+  - `local`（默认）：临时切系统输出到本机扬声器 → 播报 → 切回音箱
+  - `speaker`：照常音箱播报；`skip`：静音期跳过
+- 文案模板 `templates.blocked` =「主人，我在等你确认，请回来处理」
 
 ## 免打扰
 
@@ -54,56 +72,67 @@ turn/end ──► [原因在 announceOn?] ──► [blocked? 紧急通道] ─
 | 短轮次静默 | `minDurationMs: 60000` | 运行不足 1 分钟的轮次不播（blocked 豁免） |
 | 静音时段 | `quietHours: ["01:00","07:00"]` | 时段内不播出声，进入过夜摘要队列；支持跨零点 |
 | 播报冷却 | `cooldownMs: 90000` | 两次播报间隔小于 90 秒时跳过（blocked 豁免） |
-| goal 续跑感知 | `goalAware: true` + `goalDebounceMs: 90000` | goal 自动续跑不逐轮播；90 秒内无新轮次（= 整个目标完成）才播一次 |
-| 在场感知 | `afkSkipMs: 30000` | 键鼠 30 秒内有操作 = 你在电脑前，跳过非紧急播报（结果你看得见；blocked 豁免）；0 = 禁用 |
+| goal 续跑感知 | `goalAware: true` + `goalDebounceMs: 90000` | goal 自动续跑不逐轮播；90 秒无新轮次（= 目标完成）才播一次 |
+| 在场感知 | `afkSkipMs: 30000` | 键鼠 30 秒内有操作 = 你在电脑前，跳过非紧急播报（结果就在屏幕上）；0 = 禁用；非 macOS 平台不拦截 |
 
 ## 过夜摘要
 
-静音时段（01:00–07:00）的播报不丢弃，入队持久化（`digest-queue.json`），**07:00 整汇总播一次**：
+静音时段的播报不丢弃，入队持久化（`digest-queue.json`），**静音结束时汇总播一次**：
 
-- `llm` 模式：把整晚条目交给一次 LLM 调用合并成一段话——「主人，早上好。夜里完成了3个任务，其中1个出错」
+- `llm` 模式：整晚条目交给一次 LLM 调用合并——「主人，早上好。夜里完成了3个任务，其中1个出错」
 - 其他模式：按条数与错误数生成摘要
-- 进程重启不丢：重启后队列非空且已出静音时段 → 10 秒后补播
+- 进程重启不丢：重启后队列非空且已出静音时段 → 10 秒后补播；被新轮次取消 → 自动重新入队
 
-## GUI 设置面板（Web 客户端插件）
+## 低延迟设计
 
-侧栏底部「🔊 语音播报」入口，状态点颜色：**绿**=就绪 / **灰**=静音时段 / **红**=上次失败 / **黄**=播报中。
+| 机制 | 配置 | 说明 |
+| --- | --- | --- |
+| 预热连接 | `prewarm: true` | turn/start 即后台预连音箱，轮次跑完时音箱已就绪、播报秒出声；休眠音箱预热提前失败，播报直走本机（静音时段不预热，1 分钟限频） |
+| 快速失败 | `speakerRetries: 1` | 音箱不可达时一次尝试（约 25 秒）即放弃，立即降级本机播放 |
+| 迟到取消 | `cancelOnNewTurn: true` | 新一轮开始 = 人在电脑前，未播/播报中的旧通知立即中止（杀进程、跳过回退） |
 
-点击打开面板：开关、播报模式、音量、静音时段、冷却、最短轮时长、阻塞提醒策略、过夜摘要开关，以及「🔈 试听」按钮。保存走 `POST /plugin-api/voice-info/config`，**即时生效免重启**（仅 keepAlive 相关需重启）。
+**可靠性兜底链**：音箱 → 本机 `ble-speaker play` → 裸 `say`；另有可选 `keepAlive` 定期重连防音箱休眠（默认关，会一直占用设备）。
 
-## 可靠性
+## GUI 设置面板
 
-- **预热连接**（`prewarm: true`）：turn/start 即在后台预连音箱，轮次跑完时音箱已就绪、播报秒出声；音箱休眠则预热提前失败，播报直接走本机（静音时段不预热）
-- **快速失败**（`speakerRetries: 1`）：音箱不可达/休眠时一次尝试即失败，立即降级本机播放——不会为重试空等一分多钟
-- **迟到通知取消**（`cancelOnNewTurn: true`）：用户新开一轮时自动取消未播/播报中的旧通知（你已在电脑前，迟到的"任务完成"只剩困惑）；过夜摘要被取消会重新入队
-- **本机回退**（`fallbackLocal`）：音箱播报失败时自动降级 `ble-speaker play` → `say`
-- **连接保活**（`keepAlive`，默认关）：定期静默重连防音箱休眠
-- **自检路由**：`http://127.0.0.1:3080/plugin-api/voice-info/test`（状态/配置/日志），`?announce=1` 试听
-- **配置路由**：`GET/POST /plugin-api/voice-info/config`（白名单校验、持久化、即时生效）
+侧栏底部「🔊 语音播报」入口，状态点：**绿**=就绪 / **灰**=静音时段 / **红**=上次失败 / **黄**=播报中。
+
+面板可调：总开关、播报模式、音量、静音时段、冷却、最短轮时长、goal 感知、阻塞策略、过夜摘要、预热连接、在场跳过、提示音开关/间隔、**语音引擎/音色（带 41 音色下拉）/语速**，以及「🔈 试听」按钮（专属测试文案，不冒充完成通知）。保存即生效，无需重启（仅 keepAlive 需重启）。
+
+## HTTP 路由
+
+| 路由 | 用途 |
+| --- | --- |
+| `GET /plugin-api/voice-info/test` | 插件状态/配置/最近日志；`?announce=1` 触发试听 |
+| `GET/POST /plugin-api/voice-info/config` | 读/写配置（白名单校验、持久化、即时生效） |
+| `GET /plugin-api/voice-info/voices` | 代理 cosyvoice `/healthz`，列出全部可用音色 |
 
 ## 其他行为
 
 - 只监听**主对话**（子代理会话已过滤）
 - 播报串行化 + 合并：不重叠、不抢占连接
-- 完全旁路（不阻塞回合收尾），失败只记日志 `/tmp/dsh-voice-info.log`
-
-## 配置
-
-完整配置项及说明见 [`config.example.json`](config.example.json)（每项都有 `_comment`）。克隆后复制为 `config.json` 并改 `bleSpeakerDir`/`device` 指向你的环境。改文件需重启 GUI；用 GUI 面板或 POST 路由即时生效。
+- 完全旁路（不阻塞回合收尾），失败只记日志（`/tmp/dsh-voice-info.log`）
 
 ## 安装
 
-前置：本机已有 ble-speaker 项目（macOS 需 `brew install blueutil switchaudio-osx`），且目标音箱成功连接过一次（写入其 `devices.json` 登记簿）。
+前置：
+1. 本机已有 ble-speaker 项目（macOS 需 `brew install blueutil switchaudio-osx`；需含 `--engine cosyvoice` / `--chime` 支持的同步版本）
+2. 目标音箱成功连接过一次（写入其 `devices.json` 登记簿）
+3. 可选：本地 cosyvoice-server（更自然的音色；没有则自动用系统 TTS）
 
 ```bash
 git clone https://github.com/flyingtimes/dsh-voice-info.git ~/code/dsh-voice-info
 cd ~/code/dsh-voice-info
-cp config.example.json config.json   # 改 bleSpeakerDir / device
+cp config.example.json config.json   # 改 bleSpeakerDir / device / ttsUrl
 dsh plugin --profile web add ~/code/dsh-voice-info
 ```
 
 包声明 `dsh.bundle.patch`（服务端）+ `dsh.client`（Web 客户端），重启 `dsh web` 后侧栏出现「🔊 语音播报」入口。
 
-## 依赖
+## 配置
 
-ble-speaker 侧需就绪：`blueutil`、`switchaudio-osx`（brew），设备成功连接过一次。`llm` 模式需要 profile 里有可用模型路由（缺失时自动回退）。
+完整配置项及逐项 `_comment` 说明见 [`config.example.json`](config.example.json)。改文件需重启 GUI；用 GUI 面板或 POST 路由即时生效。
+
+## License
+
+[MIT](LICENSE)
